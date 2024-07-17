@@ -1,0 +1,113 @@
+FROM registry.fedoraproject.org/fedora-minimal:latest
+
+# Install DNF and essential build tools
+RUN microdnf install dnf -y && \
+    microdnf clean all && \
+    dnf group install -y "Development Tools" && \
+    dnf install -y \
+    gcc gcc-c++ make cmake \
+    wget git sudo jq \
+    neovim ripgrep fzf \
+    zsh tmux \
+    openssl-devel zlib-devel \
+    bzip2-devel readline-devel sqlite-devel \
+    ncurses-devel libxml2-devel \
+    libffi-devel \
+    openssh-server unzip \
+    autoconf automake \
+    gdb valgrind \
+    python3 python3-pip python3-devel \
+    tar \
+    && dnf clean all
+
+# Install dependencies for Erlang
+RUN dnf install -y \
+    ncurses-devel openssl-devel \
+    && dnf clean all
+
+# Install latest stable Node.js
+RUN curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash - \
+    && dnf install -y nodejs \
+    && dnf clean all
+
+# Set up a non-root user
+#ARG USERNAME=coder
+#ARG USER_UID=1000
+#ARG USER_GID=$USER_UID
+#RUN groupadd --gid $USER_GID $USERNAME \
+#    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
+#    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
+#   && chmod 0440 /etc/sudoers.d/$USERNAME
+
+# Install asdf
+RUN git clone https://github.com/asdf-vm/asdf.git /opt/asdf --branch v0.14.0
+ENV ASDF_DIR=/opt/asdf
+ENV PATH="${ASDF_DIR}/bin:${ASDF_DIR}/shims:${PATH}"
+
+ARG ERLANG_VERSION=27.0.1
+ARG ELIXIR_VERSION=1.17.2-otp-27
+# Install Erlang and Elixir using asdf
+RUN . /opt/asdf/asdf.sh && \
+    asdf plugin add erlang https://github.com/asdf-vm/asdf-erlang.git && \
+    asdf plugin add elixir https://github.com/asdf-vm/asdf-elixir.git && \
+    asdf install erlang ${ERLANG_VERSION} && \
+    asdf install elixir ${ELIXIR_VERSION} && \
+    asdf global erlang ${ERLANG_VERSION} && \
+    asdf global elixir ${ELIXIR_VERSION} && \
+    mix local.hex --force && \
+    mix local.rebar --force
+
+# Install Go
+ARG GO_VERSION=1.22.5
+RUN wget https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz \
+    && rm go${GO_VERSION}.linux-amd64.tar.gz
+ENV PATH=$PATH:/usr/local/go/bin
+
+# Install Zig
+ARG ZIG_VERSION=0.11.0
+RUN wget https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
+    && tar -xf zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
+    && mv zig-linux-x86_64-${ZIG_VERSION} /usr/local/zig \
+    && rm zig-linux-x86_64-${ZIG_VERSION}.tar.xz
+ENV PATH=$PATH:/usr/local/zig
+
+# Install Deno
+RUN curl -fsSL https://deno.land/x/install/install.sh | sh
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"
+
+# Install latest xsv
+RUN XSV_LATEST=$(curl -s https://api.github.com/repos/BurntSushi/xsv/releases/latest | jq -r .tag_name) && \
+    curl -L https://github.com/BurntSushi/xsv/releases/download/${XSV_LATEST}/xsv-${XSV_LATEST}-x86_64-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin
+
+# Install latest zellij
+RUN ZELLIJ_LATEST=$(curl -s https://api.github.com/repos/zellij-org/zellij/releases/latest | jq -r .tag_name) && \
+    curl -L https://github.com/zellij-org/zellij/releases/download/${ZELLIJ_LATEST}/zellij-x86_64-unknown-linux-musl.tar.gz | tar xzf - -C /usr/local/bin
+
+# Set up aliases and configurations
+RUN echo 'alias vim=nvim' >> /etc/bashrc \
+    && echo 'eval "$(fzf --bash)"' >> /etc/bashrc \
+    && echo '. /opt/asdf/asdf.sh' >> /etc/bashrc
+
+# SSH server setup
+RUN mkdir /var/run/sshd
+EXPOSE 22
+
+#install rust
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN rustup default stable
+
+# Set the working directory
+WORKDIR /workspace
+
+# Start SSH server
+# Create a startup script
+RUN echo '#!/bin/bash' > /root/startup.sh && \
+echo 'trap : TERM INT; sleep infinity & wait' >> /root/startup.sh && \
+    chmod +x /root/startup.sh
+
+CMD ["/root/startup.sh"]
+
+#CMD ["/usr/sbin/sshd", "-D"]

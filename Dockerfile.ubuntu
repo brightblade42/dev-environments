@@ -1,0 +1,167 @@
+# Start with Ubuntu 24.04 LTS base image
+FROM ubuntu:24.04
+
+# Avoid prompts from apt
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Common tools and libraries
+RUN apt-get update && apt-get install -y \
+    build-essential curl wget git sudo \
+    neovim ripgrep fd-find bat fzf jq \
+    htop zsh tmux \
+    libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev \
+    libncurses5-dev xz-utils tk-dev libxml2-dev \
+    libxmlsec1-dev libffi-dev liblzma-dev \
+    openssh-server unzip \
+    software-properties-common \
+    autoconf libncurses5-dev \
+    # C/C++ development tools
+    ripgrep fzf \
+    gcc g++ gdb make cmake valgrind \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# Set up a non-root user and SSH
+ARG USERNAME=vscode
+ARG USER_UID=2000
+ARG USER_GID=2000
+
+RUN groupadd --gid $USER_GID $USERNAME \
+    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
+    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
+    && chmod 0440 /etc/sudoers.d/$USERNAME
+
+RUN mkdir -p /home/$USERNAME/.ssh \
+    && chmod 700 /home/$USERNAME/.ssh \
+    && chown -R $USERNAME:$USERNAME /home/$USERNAME
+
+# Switch to the new user
+USER $USERNAME
+
+
+
+# Install asdf
+RUN git clone https://github.com/asdf-vm/asdf.git /home/$USERNAME/.asdf --branch v0.14.0 \
+    && echo '. /home/$USERNAME/.asdf/asdf.sh' >> /home/$USERNAME/.bashrc \
+    && echo '. /home/$USERNAME/.asdf/completions/asdf.bash' >> /home/$USERNAME/.bashrc
+ENV PATH="/home/$USERNAME/.asdf/bin:/home/$USERNAME/.asdf/shims:${PATH}"
+
+# Switch to non-root user for asdf installations
+USER $USERNAME
+
+# Install Erlang and Elixir using asdf
+RUN asdf plugin add erlang \
+    && asdf plugin add elixir \
+    && asdf install erlang 27.0 \
+    && asdf install elixir 1.17.0 \
+    && asdf global erlang 27.0 \
+    && asdf global elixir 1.17.0
+
+# Switch back to root for further installations
+USER root
+
+# Go layer
+ARG INSTALL_GO=true
+ARG GO_VERSION=1.22.0
+RUN if [ "$INSTALL_GO" = "true" ]; then \
+    wget https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz \
+    && rm go${GO_VERSION}.linux-amd64.tar.gz \
+    && echo 'export PATH=$PATH:/usr/local/go/bin' >> /home/$USERNAME/.bashrc; \
+    fi
+
+# Rust layer
+ARG INSTALL_RUST=true
+# Install Rust
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Install xsv and zellij using cargo
+#RUN cargo install xsv zellij
+
+# Ensure all users can access Rust and cargo-installed binaries
+RUN chmod -R a+w $RUSTUP_HOME $CARGO_HOME
+
+# Set up aliases and environment for all users
+RUN echo 'export PATH=$PATH:/usr/local/cargo/bin' >> /etc/bash.bashrc && \
+    echo 'alias xsv="/usr/local/cargo/bin/xsv"' >> /etc/bash.bashrc && \
+    echo 'alias zellij="/usr/local/cargo/bin/zellij"' >> /etc/bash.bashrc
+
+# Switch to non-root user
+USER $USERNAME
+
+# Set up Rust and tools for non-root user
+RUN rustup default stable && \
+    echo 'source /etc/bash.bashrc' >> ~/.bashrc
+
+# You might want to add any user-specific configurations here
+
+# Switch back to root for any remaining setup
+USER root
+
+# Node.js layer
+ARG INSTALL_NODE=true
+ARG NODE_VERSION=20
+RUN if [ "$INSTALL_NODE" = "true" ]; then \
+    curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g yarn; \
+    fi
+
+# Python layer
+ARG INSTALL_PYTHON=true
+ARG PYTHON_VENV_PATH=/opt/venv
+
+RUN if [ "$INSTALL_PYTHON" = "true" ]; then \
+    apt-get update && \
+    apt-get install -y python3 python3-venv python3-pip && \
+    python3 -m venv $PYTHON_VENV_PATH && \
+    $PYTHON_VENV_PATH/bin/pip install --upgrade pip; \
+    fi
+
+# Add Python virtual environment to PATH
+ENV PATH="$PYTHON_VENV_PATH/bin:$PATH"
+
+# Zig layer
+ARG INSTALL_ZIG=true
+ARG ZIG_VERSION=0.11.0
+RUN if [ "$INSTALL_ZIG" = "true" ]; then \
+    wget https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
+    && tar -xf zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
+    && mv zig-linux-x86_64-${ZIG_VERSION} /usr/local/zig \
+    && rm zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
+    && echo 'export PATH=$PATH:/usr/local/zig' >> /home/$USERNAME/.bashrc; \
+    fi
+
+# Deno layer
+ARG INSTALL_DENO=true
+RUN if [ "$INSTALL_DENO" = "true" ]; then \
+    su - $USERNAME -c 'curl -fsSL https://deno.land/x/install/install.sh | sh' \
+    && echo 'export DENO_INSTALL="/home/$USERNAME/.deno"' >> /home/$USERNAME/.bashrc \
+    && echo 'export PATH=$PATH:$DENO_INSTALL/bin' >> /home/$USERNAME/.bashrc; \
+    fi
+
+# Set up additional tools
+RUN su - $USERNAME -c 'if [ -f /home/$USERNAME/.cargo/env ]; then . /home/$USERNAME/.cargo/env && cargo install zellij xsv; fi'
+
+# Set up aliases and configurations
+RUN echo 'alias fd=fdfind' >> /home/$USERNAME/.bashrc \
+    && echo 'alias bat=batcat' >> /home/$USERNAME/.bashrc \
+    && echo 'eval "$(fzf --bash)"' >> /home/$USERNAME/.bashrc \
+    && echo 'alias vim=nvim' >> /home/$USERNAME/.bashrc
+
+# SSH server setup
+RUN mkdir /run/sshd
+EXPOSE 22
+
+# Switch to non-root user
+USER $USERNAME
+
+# Set the working directory
+WORKDIR /workspace
+
+# Start SSH server
+CMD ["/usr/sbin/sshd", "-D"]
